@@ -63,7 +63,7 @@ async def show_profile(callback: CallbackQuery):
 @router.callback_query(F.data == "profile_refresh")
 async def refresh_profile(callback: CallbackQuery):
     await show_profile(callback)
-    await callback.answer("🔄 Обновлено!")
+    # callback.answer уже вызван в show_profile
 
 
 @router.message(Command("profile"))

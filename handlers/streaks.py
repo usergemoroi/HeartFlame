@@ -168,23 +168,22 @@ async def accept_streak_request(callback: CallbackQuery):
     user_id = callback.from_user.id
     request_id = int(callback.data.split("_")[2])
     
-    async with await db.get_connection() as conn:
+    async with db.get_connection() as conn:
         cursor = await conn.execute(
             "SELECT * FROM streak_requests WHERE id = ? AND status = 'pending'",
             (request_id,)
         )
         request = await cursor.fetchone()
-    
-    if not request:
-        await callback.answer("❌ Запрос не найден", show_alert=True)
-        return
-    
-    if request['to_user_id'] != user_id:
-        await callback.answer("❌ Это не твой запрос", show_alert=True)
-        return
+        
+        if not request:
+            await callback.answer("❌ Запрос не найден", show_alert=True)
+            return
+        
+        if request['to_user_id'] != user_id:
+            await callback.answer("❌ Это не твой запрос", show_alert=True)
+            return
     
     from_user = await db.get_user(request['from_user_id'])
-    
     await db.update_request_status(request_id, 'accepted')
     streak_id = await db.create_streak(request['from_user_id'], user_id)
     
@@ -211,16 +210,16 @@ async def reject_streak_request(callback: CallbackQuery):
     user_id = callback.from_user.id
     request_id = int(callback.data.split("_")[2])
     
-    async with await db.get_connection() as conn:
+    async with db.get_connection() as conn:
         cursor = await conn.execute(
             "SELECT * FROM streak_requests WHERE id = ? AND status = 'pending'",
             (request_id,)
         )
         request = await cursor.fetchone()
-    
-    if not request:
-        await callback.answer("❌ Запрос не найден", show_alert=True)
-        return
+        
+        if not request:
+            await callback.answer("❌ Запрос не найден", show_alert=True)
+            return
     
     if request['to_user_id'] != user_id:
         await callback.answer("❌ Это не твой запрос", show_alert=True)
@@ -272,8 +271,8 @@ async def extend_streak(callback: CallbackQuery):
     await db.add_sparks(user_id, reward)
     
     if new_days in STREAK_MILESTONES:
-        streak = await db.get_connection()
-        async with streak as conn:
+        conn = await db.get_connection()
+        async with conn:
             cursor = await conn.execute("SELECT * FROM streaks WHERE id = ?", (streak_id,))
             streak_data = await cursor.fetchone()
         

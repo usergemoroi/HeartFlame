@@ -1,3 +1,3 @@
-from .fsm import OnboardingStates, StreakStates, PetStates, ShopStates
+from .fsm import OnboardingStates, StreakStates, PetStates, ShopStates, GiftStates
 
-__all__ = ["OnboardingStates", "StreakStates", "PetStates", "ShopStates"]
+__all__ = ["OnboardingStates", "StreakStates", "PetStates", "ShopStates", "GiftStates"]

@@ -106,6 +106,11 @@ async def process_username(message: Message, state: FSMContext):
 async def process_avatar(callback: CallbackQuery, state: FSMContext):
     user_id = callback.from_user.id
     avatar_idx = int(callback.data.split("_")[1])
+    
+    if avatar_idx < 0 or avatar_idx >= len(STARTER_AVATARS):
+        await callback.answer("❌ Неверный выбор", show_alert=True)
+        return
+    
     avatar = STARTER_AVATARS[avatar_idx]
     
     data = await state.get_data()

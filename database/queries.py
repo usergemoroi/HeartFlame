@@ -101,7 +101,10 @@ class Database:
                 return 0
             
             current_energy = row['energy']
-            last_update = datetime.fromisoformat(row['last_energy_update'])
+            last_update_str = row['last_energy_update']
+            if ' ' in last_update_str and 'T' not in last_update_str:
+                last_update_str = last_update_str.replace(' ', 'T')
+            last_update = datetime.fromisoformat(last_update_str)
             
             minutes_passed = (datetime.now() - last_update).total_seconds() / 60
             energy_regen = int(minutes_passed)
