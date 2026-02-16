@@ -1,26 +1,25 @@
 from typing import Callable, Dict, Any, Awaitable
 from aiogram import BaseMiddleware
-from aiogram.types import Message, CallbackQuery
-from database.crud import get_user
-from utils.time import get_current_timestamp
+from aiogram.types import TelegramObject, Message, CallbackQuery
+from database import Database
 
 
 class UserCheckMiddleware(BaseMiddleware):
+    def __init__(self, db: Database):
+        self.db = db
+    
     async def __call__(
         self,
-        handler: Callable[[Message | CallbackQuery, Dict[str, Any]], Awaitable[Any]],
-        event: Message | CallbackQuery,
+        handler: Callable[[TelegramObject, Dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
         data: Dict[str, Any]
     ) -> Any:
-        user_id = event.from_user.id
-        user = await get_user(user_id)
-        
-        data['user_data'] = user
-        data['is_registered'] = user is not None
-        
-        if user:
-            from database.crud import update_user
-            now = get_current_timestamp()
-            await update_user(user_id, last_action=now)
+        if isinstance(event, (Message, CallbackQuery)):
+            user_id = event.from_user.id
+            user = await self.db.get_user(user_id)
+            
+            if user:
+                data['user'] = user
+                await self.db.update_energy(user_id)
         
         return await handler(event, data)

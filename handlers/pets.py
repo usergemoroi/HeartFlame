@@ -1,259 +1,235 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery
-from keyboards.inline import get_pet_actions_keyboard, get_back_to_menu_keyboard
-from database.crud import get_user_pets, get_pet, feed_pet, update_pet, update_user_sparks
-from utils.text import get_text, escape_markdown
-from utils.time import get_current_timestamp
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery
+from database import Database
+from keyboards.inline import get_pet_keyboard, get_back_keyboard
+from locales import get_text
+from utils.pet_utils import (
+    calculate_pet_exp_for_level,
+    get_pet_state_emoji,
+    get_mood_emoji,
+    check_pet_evolution
+)
+from config.constants import PetState, PetMood
 import random
-import json
+import structlog
 
+logger = structlog.get_logger()
 router = Router()
+db = Database()
 
 
-@router.callback_query(F.data == "menu_pets")
-async def show_pets(callback: CallbackQuery, user_data: dict):
-    lang = user_data['language']
-    user_id = user_data['user_id']
+@router.callback_query(F.data == "menu_pet")
+@router.message(Command("pet"))
+async def show_pet(event):
+    if isinstance(event, CallbackQuery):
+        user_id = event.from_user.id
+        message = event.message
+        is_callback = True
+    else:
+        user_id = event.from_user.id
+        message = event
+        is_callback = False
     
-    pets = await get_user_pets(user_id)
+    pets = await db.get_user_pets(user_id)
     
     if not pets:
-        text = "🐣 You have no pets yet\\!\n\nLight flames with friends for 3 days to hatch one\\!" if lang == 'en' else "🐣 У тебя пока нет питомцев\\!\n\nДержи огоньки с друзьями 3 дня, чтобы вылупился питомец\\!"
+        text = get_text("no_pet", user_id)
+        keyboard = get_pet_keyboard(None)
+    else:
+        pet = pets[0]
         
-        await callback.message.edit_text(
-            text,
-            reply_markup=get_back_to_menu_keyboard(lang),
-            parse_mode='MarkdownV2'
+        state_emoji = get_pet_state_emoji(PetState(pet['state']))
+        mood_emoji = get_mood_emoji(PetMood(pet['mood']))
+        
+        next_level_exp = calculate_pet_exp_for_level(pet['level'] + 1)
+        
+        status_text = ""
+        if pet['mood'] == PetMood.HAPPY.value:
+            status_text = "Питомец счастлив! 😊"
+        elif pet['mood'] == PetMood.HUNGRY.value:
+            status_text = "Питомец хочет кушать... 😋"
+        elif pet['mood'] == PetMood.SAD.value:
+            status_text = "Питомец грустит 😢"
+        elif pet['mood'] == PetMood.DEPRESSED.value:
+            status_text = "Питомец в депрессии... 😭"
+        
+        text = get_text(
+            "pet_status",
+            user_id,
+            emoji=pet['emoji'],
+            name=pet['name'],
+            state=pet['state'],
+            mood=mood_emoji,
+            level=pet['level'],
+            exp=pet['exp'],
+            next_exp=next_level_exp,
+            lives=pet['lives'],
+            status_text=status_text
         )
-        await callback.answer()
-        return
+        keyboard = get_pet_keyboard(pet['id'])
     
-    pet = pets[0]
-    
-    xp_needed = 100 * (pet['level'] ** 1.5)
-    
-    mood_emojis = {
-        'happy': '😊',
-        'neutral': '😐',
-        'sad': '😢',
-        'depressed': '😭'
-    }
-    
-    items_list = json.loads(pet.get('items', '[]'))
-    items_display = ' '.join(items_list[:10]) if items_list else "None" if lang == 'en' else "Нет"
-    
-    now = get_current_timestamp()
-    age_days = (now - pet['created_at']) // 86400
-    
-    pet_text = get_text(
-        lang,
-        'pet_profile',
-        pet=pet['pet_emoji'],
-        pet_name=escape_markdown(pet['pet_name']),
-        level=pet['level'],
-        rarity=pet['rarity'].upper(),
-        mood=mood_emojis.get(pet['mood'], '😊'),
-        xp=pet['xp'],
-        max_xp=int(xp_needed),
-        age=age_days,
-        items=items_display
-    )
-    
-    await callback.message.edit_text(
-        pet_text,
-        reply_markup=get_pet_actions_keyboard(pet['pet_id'], lang),
-        parse_mode='MarkdownV2'
-    )
-    
-    await callback.answer()
+    if is_callback:
+        await message.edit_text(text, reply_markup=keyboard, parse_mode="MarkdownV2")
+        await event.answer()
+    else:
+        await message.answer(text, reply_markup=keyboard, parse_mode="MarkdownV2")
 
 
 @router.callback_query(F.data.startswith("pet_feed_"))
-async def feed_pet_action(callback: CallbackQuery, user_data: dict):
+async def feed_pet(callback: CallbackQuery):
+    user_id = callback.from_user.id
     pet_id = int(callback.data.split("_")[2])
-    lang = user_data['language']
     
-    if user_data['sparks'] < 30:
-        await callback.answer(
-            "Not enough sparks! Need 30 🔥" if lang == 'en' else "Недостаточно искр! Нужно 30 🔥",
-            show_alert=True
-        )
+    user = await db.get_user(user_id)
+    pet = await db.get_pet(pet_id)
+    
+    if not pet or pet['user_id'] != user_id:
+        await callback.answer("❌ Питомец не найден", show_alert=True)
         return
     
-    pet = await get_pet(pet_id)
+    feed_cost = 30
     
-    if not pet:
-        await callback.answer("Pet not found" if lang == 'en' else "Питомец не найден", show_alert=True)
+    if user['sparks'] < feed_cost:
+        await callback.answer(get_text("not_enough_sparks", user_id), show_alert=True)
         return
     
-    xp_gain = random.randint(15, 30)
+    await db.add_sparks(user_id, -feed_cost)
     
-    await feed_pet(pet_id, xp_gain)
-    await update_user_sparks(user_data['user_id'], -30)
+    exp_gain = random.randint(15, 30)
+    new_exp = pet['exp'] + exp_gain
+    new_level = pet['level']
     
-    new_xp = pet['xp'] + xp_gain
-    xp_needed = 100 * (pet['level'] ** 1.5)
+    next_level_exp = calculate_pet_exp_for_level(new_level + 1)
     
-    if new_xp >= xp_needed:
-        new_level = pet['level'] + 1
-        await update_pet(pet_id, level=new_level, xp=0, mood='happy')
-        
-        from config import PET_TYPES
-        
-        if new_level % 5 == 0 and pet['rarity'] != 'mythic':
-            rarity_upgrade = {
-                'common': 'rare',
-                'rare': 'epic',
-                'epic': 'legendary',
-                'legendary': 'mythic'
-            }
-            new_rarity = rarity_upgrade.get(pet['rarity'], pet['rarity'])
-            new_emoji = random.choice(PET_TYPES[new_rarity])
-            
-            await update_pet(pet_id, rarity=new_rarity, pet_emoji=new_emoji)
-            
-            await callback.message.answer(
-                get_text(
-                    lang,
-                    'pet_evolved',
-                    old_pet=pet['pet_emoji'],
-                    new_pet=new_emoji,
-                    pet_name=escape_markdown(pet['pet_name']),
-                    level=new_level
-                ),
-                parse_mode='MarkdownV2'
-            )
-        else:
-            await callback.message.answer(
-                f"🎉 *Level Up\\!* {pet['pet_emoji']} is now level {new_level}\\!",
-                parse_mode='MarkdownV2'
-            )
-    else:
-        await update_pet(pet_id, mood='happy')
+    while new_exp >= next_level_exp:
+        new_exp -= next_level_exp
+        new_level += 1
+        next_level_exp = calculate_pet_exp_for_level(new_level + 1)
     
-    await callback.message.edit_text(
-        get_text(
-            lang,
-            'pet_feed',
-            pet_name=escape_markdown(pet['pet_name']),
-            xp=xp_gain,
-            pet=pet['pet_emoji']
-        ),
-        parse_mode='MarkdownV2'
+    current_state = PetState(pet['state'])
+    new_state = check_pet_evolution(new_level, current_state)
+    
+    await db.update_pet(
+        pet_id,
+        exp=new_exp,
+        level=new_level,
+        state=new_state.value,
+        mood=PetMood.HAPPY.value
     )
     
-    await callback.answer()
+    if new_state != current_state:
+        await callback.message.answer(
+            get_text(
+                "pet_evolved",
+                user_id,
+                old=get_pet_state_emoji(current_state),
+                new=get_pet_state_emoji(new_state)
+            ),
+            parse_mode="MarkdownV2"
+        )
+    
+    await callback.answer(
+        get_text("feed_success", user_id, exp=exp_gain),
+        show_alert=True
+    )
+    
+    await show_pet(callback)
 
 
 @router.callback_query(F.data.startswith("pet_pet_"))
-async def pet_pet_action(callback: CallbackQuery, user_data: dict):
+async def pet_pet(callback: CallbackQuery):
+    user_id = callback.from_user.id
     pet_id = int(callback.data.split("_")[2])
-    lang = user_data['language']
     
-    pet = await get_pet(pet_id)
+    pet = await db.get_pet(pet_id)
     
-    if not pet:
-        await callback.answer("Pet not found" if lang == 'en' else "Питомец не найден", show_alert=True)
+    if not pet or pet['user_id'] != user_id:
+        await callback.answer("❌ Питомец не найден", show_alert=True)
         return
     
-    mood_upgrade = {
-        'depressed': 'sad',
-        'sad': 'neutral',
-        'neutral': 'happy',
-        'happy': 'happy'
-    }
+    current_mood = PetMood(pet['mood'])
     
-    new_mood = mood_upgrade.get(pet['mood'], 'happy')
-    await update_pet(pet_id, mood=new_mood)
+    if current_mood == PetMood.DEPRESSED:
+        new_mood = PetMood.SAD
+    elif current_mood == PetMood.SAD:
+        new_mood = PetMood.NEUTRAL
+    elif current_mood == PetMood.NEUTRAL or current_mood == PetMood.HUNGRY:
+        new_mood = PetMood.HAPPY
+    else:
+        new_mood = current_mood
     
-    await callback.message.edit_text(
-        get_text(
-            lang,
-            'pet_pet',
-            pet_name=escape_markdown(pet['pet_name']),
-            pet=pet['pet_emoji']
-        ),
-        parse_mode='MarkdownV2'
-    )
+    await db.update_pet(pet_id, mood=new_mood.value)
     
-    await callback.answer()
+    await callback.answer(get_text("pet_success", user_id), show_alert=True)
+    await show_pet(callback)
 
 
 @router.callback_query(F.data.startswith("pet_play_"))
-async def pet_play_action(callback: CallbackQuery, user_data: dict):
-    lang = user_data['language']
+async def play_with_pet(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    pet_id = int(callback.data.split("_")[2])
+    
+    user = await db.get_user(user_id)
+    pet = await db.get_pet(pet_id)
+    
+    if not pet or pet['user_id'] != user_id:
+        await callback.answer("❌ Питомец не найден", show_alert=True)
+        return
+    
+    energy_cost = 20
+    
+    if user['energy'] < energy_cost:
+        await callback.answer("⚡ Недостаточно энергии!", show_alert=True)
+        return
+    
+    await db.update_user(user_id, energy=user['energy'] - energy_cost)
+    
+    sparks_earned = random.randint(5, 15)
+    await db.add_sparks(user_id, sparks_earned)
+    
+    exp_gain = random.randint(10, 20)
+    new_exp = pet['exp'] + exp_gain
+    
+    await db.update_pet(pet_id, exp=new_exp, mood=PetMood.HAPPY.value)
     
     await callback.answer(
-        "Mini-game coming soon! 🎮" if lang == 'en' else "Мини-игра скоро! 🎮",
+        f"🎮 Отличная игра! +{sparks_earned} 🔥 и +{exp_gain} опыта!",
         show_alert=True
     )
+    
+    await show_pet(callback)
+
+
+@router.callback_query(F.data.startswith("pet_dance_"))
+async def dance_with_pet(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    pet_id = int(callback.data.split("_")[2])
+    
+    pet = await db.get_pet(pet_id)
+    
+    if not pet or pet['user_id'] != user_id:
+        await callback.answer("❌ Питомец не найден", show_alert=True)
+        return
+    
+    animations = [
+        "💃🕺 Танцуем вместе!",
+        "🎵 Зажигательный танец!",
+        "✨ Магический танец!",
+        "🌟 Космический танец!",
+    ]
+    
+    animation = random.choice(animations)
+    
+    exp_gain = random.randint(5, 10)
+    await db.update_pet(pet_id, exp=pet['exp'] + exp_gain)
+    
+    await callback.answer(f"{animation} +{exp_gain} опыта!", show_alert=True)
+    await show_pet(callback)
 
 
 @router.callback_query(F.data.startswith("pet_customize_"))
-async def pet_customize_action(callback: CallbackQuery, user_data: dict):
-    lang = user_data['language']
+async def customize_pet(callback: CallbackQuery):
+    user_id = callback.from_user.id
     
-    await callback.answer(
-        "Customization coming soon! 🎨" if lang == 'en' else "Кастомизация скоро! 🎨",
-        show_alert=True
-    )
-
-
-@router.callback_query(F.data.startswith("streak_pet_"))
-async def show_streak_pet(callback: CallbackQuery, user_data: dict):
-    streak_id = int(callback.data.split("_")[2])
-    lang = user_data['language']
-    
-    from database.crud import get_user_streaks
-    streaks = await get_user_streaks(user_data['user_id'])
-    streak = next((s for s in streaks if s['streak_id'] == streak_id), None)
-    
-    if not streak or not streak.get('pet_id'):
-        await callback.answer(
-            "No pet yet! Reach 3 days to hatch one" if lang == 'en' else "Питомца пока нет! Достигни 3 дней, чтобы он вылупился",
-            show_alert=True
-        )
-        return
-    
-    pet = await get_pet(streak['pet_id'])
-    
-    if not pet:
-        await callback.answer("Pet not found" if lang == 'en' else "Питомец не найден", show_alert=True)
-        return
-    
-    xp_needed = 100 * (pet['level'] ** 1.5)
-    
-    mood_emojis = {
-        'happy': '😊',
-        'neutral': '😐',
-        'sad': '😢',
-        'depressed': '😭'
-    }
-    
-    items_list = json.loads(pet.get('items', '[]'))
-    items_display = ' '.join(items_list[:10]) if items_list else "None" if lang == 'en' else "Нет"
-    
-    now = get_current_timestamp()
-    age_days = (now - pet['created_at']) // 86400
-    
-    pet_text = get_text(
-        lang,
-        'pet_profile',
-        pet=pet['pet_emoji'],
-        pet_name=escape_markdown(pet['pet_name']),
-        level=pet['level'],
-        rarity=pet['rarity'].upper(),
-        mood=mood_emojis.get(pet['mood'], '😊'),
-        xp=pet['xp'],
-        max_xp=int(xp_needed),
-        age=age_days,
-        items=items_display
-    )
-    
-    await callback.message.answer(
-        pet_text,
-        reply_markup=get_pet_actions_keyboard(pet['pet_id'], lang),
-        parse_mode='MarkdownV2'
-    )
-    
-    await callback.answer()
+    await callback.answer("✨ Кастомизация скоро будет доступна!", show_alert=True)

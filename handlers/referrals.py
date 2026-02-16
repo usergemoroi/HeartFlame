@@ -1,60 +1,70 @@
 from aiogram import Router, F
-from aiogram.types import CallbackQuery
-from keyboards.inline import get_back_to_menu_keyboard
-from utils.text import get_text, escape_markdown
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery
+from database import Database
+from keyboards.inline import get_referrals_keyboard, get_back_keyboard
+from locales import get_text
+from utils.text_utils import generate_referral_link
+from config.constants import REFERRAL_REWARDS
+import structlog
 
+logger = structlog.get_logger()
 router = Router()
+db = Database()
 
 
 @router.callback_query(F.data == "menu_referrals")
-async def show_referrals(callback: CallbackQuery, user_data: dict):
-    lang = user_data['language']
-    user_id = user_data['user_id']
+@router.message(Command("referrals"))
+async def show_referrals(event):
+    if isinstance(event, CallbackQuery):
+        user_id = event.from_user.id
+        message = event.message
+        is_callback = True
+        bot_username = (await event.bot.me()).username
+    else:
+        user_id = event.from_user.id
+        message = event
+        is_callback = False
+        bot_username = (await event.bot.me()).username
     
-    bot_username = (await callback.bot.me()).username
-    ref_link = f"https://t\\.me/{bot_username}?start=ref{user_id}"
+    user = await db.get_user(user_id)
+    referral_count = await db.get_referral_count(user_id)
     
-    from database.crud import get_db
-    db = await get_db()
-    
-    cursor = await db.execute("""
-        SELECT COUNT(*) FROM users WHERE referrer_id = ?
-    """, (user_id,))
-    level1 = (await cursor.fetchone())[0]
-    
-    cursor = await db.execute("""
-        SELECT COUNT(*) FROM users 
-        WHERE referrer_id IN (SELECT user_id FROM users WHERE referrer_id = ?)
-    """, (user_id,))
-    level2 = (await cursor.fetchone())[0]
-    
-    cursor = await db.execute("""
-        SELECT COUNT(*) FROM users 
-        WHERE referrer_id IN (
-            SELECT user_id FROM users 
-            WHERE referrer_id IN (SELECT user_id FROM users WHERE referrer_id = ?)
+    rewards_earned = 0
+    async with await db.get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT SUM(reward_value) as total FROM referral_rewards WHERE user_id = ? AND reward_type = 'sparks'",
+            (user_id,)
         )
-    """, (user_id,))
-    level3 = (await cursor.fetchone())[0]
+        row = await cursor.fetchone()
+        if row and row['total']:
+            rewards_earned = row['total']
     
-    await db.close()
+    rewards_text = ""
+    for milestone, reward in sorted(REFERRAL_REWARDS.items()):
+        status = "✅" if referral_count >= milestone else "🔒"
+        rewards_text += f"{status} {milestone} друзей → {reward} 🔥\n"
     
-    total_earned = user_data.get('total_sparks_earned', 0)
+    link = generate_referral_link(bot_username, user_id)
     
-    ref_text = get_text(
-        lang,
-        'referral_info',
-        link=ref_link,
-        ref1=level1,
-        ref2=level2,
-        ref3=level3,
-        total=total_earned
+    text = get_text(
+        "referrals",
+        user_id,
+        link=link,
+        count=referral_count,
+        earned=rewards_earned,
+        rewards=rewards_text
     )
     
-    await callback.message.edit_text(
-        ref_text,
-        reply_markup=get_back_to_menu_keyboard(lang),
-        parse_mode='MarkdownV2'
-    )
+    keyboard = get_referrals_keyboard(bot_username, user_id)
     
-    await callback.answer()
+    if is_callback:
+        await message.edit_text(text, reply_markup=keyboard, parse_mode="MarkdownV2")
+        await event.answer()
+    else:
+        await message.answer(text, reply_markup=keyboard, parse_mode="MarkdownV2")
+
+
+@router.callback_query(F.data == "ref_copy")
+async def copy_referral_link(callback: CallbackQuery):
+    await callback.answer("📋 Скопируй ссылку из сообщения выше!", show_alert=True)

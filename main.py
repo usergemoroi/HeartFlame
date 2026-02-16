@@ -1,5 +1,7 @@
 import asyncio
 import sys
+from pathlib import Path
+
 import structlog
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -7,51 +9,35 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 
 from config import settings
-from database.init_db import init_database
-from middlewares.user_check import UserCheckMiddleware
-from middlewares.throttling import ThrottlingMiddleware
+from database import init_database, Database
+from handlers import get_handlers_router
+from middlewares import ThrottlingMiddleware, UserCheckMiddleware
 
-from handlers import (
-    start,
-    profile,
-    streaks,
-    pets,
-    shop,
-    referrals,
-    leaderboard,
-    quests,
-    gifts,
-    games,
-    friends
+structlog.configure(
+    processors=[
+        structlog.processors.add_log_level,
+        structlog.processors.TimeStamper(fmt="iso"),
+        structlog.dev.ConsoleRenderer()
+    ]
 )
 
 logger = structlog.get_logger()
 
+bot: Bot = None
 
-async def on_startup(bot: Bot):
-    logger.info("Initializing database...")
+
+async def on_startup():
+    logger.info("bot_starting")
     await init_database()
-    logger.info("Database initialized successfully")
-    
-    from tasks import start_background_tasks
-    await start_background_tasks(bot)
-    logger.info("Background tasks initialized")
+    logger.info("database_initialized")
 
 
 async def on_shutdown():
-    logger.info("Bot shutting down...")
+    logger.info("bot_shutting_down")
 
 
 async def main():
-    structlog.configure(
-        processors=[
-            structlog.processors.add_log_level,
-            structlog.processors.TimeStamper(fmt="iso"),
-            structlog.dev.ConsoleRenderer()
-        ]
-    )
-    
-    logger.info("Starting Friendship Flames Bot 2.0...")
+    global bot
     
     bot = Bot(
         token=settings.BOT_TOKEN,
@@ -61,35 +47,24 @@ async def main():
     storage = MemoryStorage()
     dp = Dispatcher(storage=storage)
     
-    dp.message.middleware(ThrottlingMiddleware(rate_limit=0.5))
-    dp.callback_query.middleware(ThrottlingMiddleware(rate_limit=0.3))
+    db = Database()
     
-    dp.message.middleware(UserCheckMiddleware())
-    dp.callback_query.middleware(UserCheckMiddleware())
+    dp.message.middleware(ThrottlingMiddleware())
+    dp.callback_query.middleware(ThrottlingMiddleware())
     
-    dp.include_router(start.router)
-    dp.include_router(profile.router)
-    dp.include_router(streaks.router)
-    dp.include_router(pets.router)
-    dp.include_router(shop.router)
-    dp.include_router(referrals.router)
-    dp.include_router(leaderboard.router)
-    dp.include_router(quests.router)
-    dp.include_router(gifts.router)
-    dp.include_router(games.router)
-    dp.include_router(friends.router)
+    dp.message.middleware(UserCheckMiddleware(db))
+    dp.callback_query.middleware(UserCheckMiddleware(db))
     
-    dp.startup.register(lambda: on_startup(bot))
+    handlers_router = get_handlers_router()
+    dp.include_router(handlers_router)
+    
+    dp.startup.register(on_startup)
     dp.shutdown.register(on_shutdown)
     
+    logger.info("bot_started", bot_username=(await bot.me()).username)
+    
     try:
-        logger.info("Bot started successfully! Press Ctrl+C to stop.")
         await dp.start_polling(bot, allowed_updates=dp.resolve_used_update_types())
-    except KeyboardInterrupt:
-        logger.info("Bot stopped by user")
-    except Exception as e:
-        logger.error(f"Critical error: {e}")
-        raise
     finally:
         await bot.session.close()
 
@@ -97,6 +72,5 @@ async def main():
 if __name__ == "__main__":
     try:
         asyncio.run(main())
-    except KeyboardInterrupt:
-        print("\n👋 Goodbye!")
-        sys.exit(0)
+    except (KeyboardInterrupt, SystemExit):
+        logger.info("bot_stopped")

@@ -1,402 +1,230 @@
-# 🤝 Contributing Guide
+# 🤝 Contributing to Friendship Flames Bot
 
-Спасибо за интерес к проекту! Этот гайд поможет вам внести свой вклад.
+Спасибо за интерес к улучшению проекта! Вот гайд по внесению изменений.
 
----
+## 📋 Содержание
 
-## 🎯 Как помочь проекту
+- [Code of Conduct](#code-of-conduct)
+- [Как начать](#как-начать)
+- [Структура проекта](#структура-проекта)
+- [Стиль кода](#стиль-кода)
+- [Тестирование](#тестирование)
+- [Pull Request Process](#pull-request-process)
 
-### 1. Найти баг и сообщить о нём
-- Создайте Issue с подробным описанием
-- Укажите шаги для воспроизведения
-- Приложите логи/скриншоты
+## Code of Conduct
 
-### 2. Исправить баг
-- Форкните репозиторий
-- Создайте ветку: `git checkout -b fix/bug-name`
-- Исправьте и протестируйте
-- Создайте Pull Request
+- Будь уважителен к другим контрибьюторам
+- Конструктивная критика приветствуется
+- Никакого токсичного поведения
 
-### 3. Добавить новую фичу
-- Откройте Issue с предложением
-- Дождитесь обсуждения
-- Создайте PR с реализацией
+## Как начать
 
-### 4. Улучшить документацию
-- Исправьте опечатки
-- Дополните примеры
-- Переведите на другие языки
+1. **Fork репозиторий**
+2. **Клонируй свой fork**:
+   ```bash
+   git clone https://github.com/your-username/friendship-flames-bot.git
+   cd friendship-flames-bot
+   ```
 
----
+3. **Создай ветку для фичи**:
+   ```bash
+   git checkout -b feature/amazing-feature
+   ```
 
-## 📝 Code Style
+4. **Установи зависимости**:
+   ```bash
+   python -m venv venv
+   source venv/bin/activate
+   pip install -r requirements.txt
+   pip install -r requirements-dev.txt  # если есть
+   ```
 
-### Python
+5. **Создай .env** и добавь свой токен
 
-Следуйте PEP 8:
-```python
-# Хорошо ✅
-async def get_user_streaks(user_id: int, status: str = 'active') -> List[Dict[str, Any]]:
-    db = await get_db()
-    # ...
-    return results
+## Структура проекта
 
-# Плохо ❌
-async def GetUserStreaks(userId,status='active'):
-    db=await get_db()
-    #...
-    return results
+```
+├── config/         # Конфигурация
+├── database/       # БД
+├── handlers/       # Обработчики команд
+├── keyboards/      # Клавиатуры
+├── states/         # FSM состояния
+├── middlewares/    # Middleware
+├── utils/          # Утилиты
+├── locales/        # Переводы
+└── tests/          # Тесты (TODO)
 ```
 
-### Типизация
+## Стиль кода
 
-Всегда используйте type hints:
+### Python Style Guide
+
+Мы следуем [PEP 8](https://pep8.org/) с некоторыми дополнениями:
+
+- **Максимальная длина строки**: 100 символов
+- **Отступы**: 4 пробела
+- **Импорты**: группируй и сортируй (stdlib → third-party → local)
+- **Type hints**: используй везде где возможно
+
+### Пример хорошего кода:
+
 ```python
-from typing import Optional, List, Dict, Any
+from typing import Optional, Dict, Any
+from datetime import datetime
 
-async def create_user(
+async def get_user_streak(
     user_id: int,
-    username: Optional[str],
-    nickname: str,
-    avatar: str
-) -> bool:
-    # ...
-```
-
-### Документация
-
-Добавляйте docstrings для сложных функций:
-```python
-async def process_referral(referrer_id: int, new_user_id: int, level: int = 1) -> int:
+    friend_id: int
+) -> Optional[Dict[str, Any]]:
     """
-    Обрабатывает реферальное вознаграждение.
+    Получить информацию о стрике между пользователями.
     
     Args:
-        referrer_id: ID реферера
-        new_user_id: ID нового пользователя
-        level: Уровень реферальной сети (1-3)
+        user_id: ID первого пользователя
+        friend_id: ID второго пользователя
     
     Returns:
-        Количество начисленных искр
+        Словарь с данными стрика или None
     """
-    # ...
+    streak = await db.get_streak(user_id, friend_id)
+    return streak
 ```
 
----
+### Naming Conventions
 
-## 🧪 Тестирование
+- **Функции/переменные**: `snake_case`
+- **Классы**: `PascalCase`
+- **Константы**: `UPPER_SNAKE_CASE`
+- **Private методы**: `_leading_underscore`
 
-Перед коммитом протестируйте:
+### Docstrings
 
-```bash
-# 1. Проверьте синтаксис
-python -m py_compile main.py
+Используй Google style docstrings:
 
-# 2. Запустите бота
-python main.py
-
-# 3. Протестируйте основные флоу:
-# - /start с регистрацией
-# - Создание огонька
-# - Продление серии
-# - Покупка в магазине
+```python
+def function(arg1: int, arg2: str) -> bool:
+    """
+    Краткое описание функции.
+    
+    Более детальное описание если нужно.
+    
+    Args:
+        arg1: Описание первого аргумента
+        arg2: Описание второго аргумента
+    
+    Returns:
+        Описание возвращаемого значения
+    
+    Raises:
+        ValueError: Когда возникает ошибка
+    """
+    pass
 ```
-
----
-
-## 🔀 Git Workflow
-
-### Именование веток
-
-- `feature/название` — новая фича
-- `fix/название` — исправление бага
-- `docs/название` — документация
-- `refactor/название` — рефакторинг
-
-Примеры:
-```bash
-git checkout -b feature/achievements-system
-git checkout -b fix/streak-expiry-bug
-git checkout -b docs/spanish-translation
-```
-
-### Коммиты
-
-Используйте Conventional Commits:
-
-```
-feat: add achievements system
-fix: correct streak expiry calculation
-docs: add Spanish translations
-refactor: optimize database queries
-style: format code with black
-test: add unit tests for pets module
-```
-
-### Pull Request
-
-Шаблон PR:
-
-```markdown
-## Описание
-Краткое описание изменений
-
-## Тип изменения
-- [ ] Новая фича
-- [ ] Исправление бага
-- [ ] Документация
-- [ ] Рефакторинг
 
 ## Тестирование
+
+(TODO: добавить когда будут тесты)
+
+```bash
+# Запуск тестов
+pytest
+
+# С coverage
+pytest --cov=. --cov-report=html
+```
+
+## Pull Request Process
+
+### 1. Перед созданием PR
+
+- [ ] Код соответствует style guide
+- [ ] Добавлены docstrings
+- [ ] Обновлена документация если нужно
 - [ ] Протестировано локально
-- [ ] Проверены edge cases
-- [ ] Обновлена документация
+- [ ] Коммиты имеют понятные сообщения
 
-## Скриншоты
-(если применимо)
+### 2. Сообщения коммитов
+
+Используй [Conventional Commits](https://www.conventionalcommits.org/):
+
 ```
+feat: добавил систему гильдий
+fix: исправил баг с продлением стрика
+docs: обновил README
+style: форматирование кода
+refactor: рефакторинг handlers
+test: добавил тесты для pets
+chore: обновил зависимости
+```
+
+### 3. Создание PR
+
+1. Push в свой fork:
+   ```bash
+   git push origin feature/amazing-feature
+   ```
+
+2. Создай PR на GitHub
+
+3. Заполни template:
+   ```markdown
+   ## Описание
+   Краткое описание изменений
+   
+   ## Тип изменений
+   - [ ] Bug fix
+   - [ ] New feature
+   - [ ] Breaking change
+   - [ ] Documentation
+   
+   ## Как протестировать
+   1. Шаги для воспроизведения
+   2. ...
+   
+   ## Чеклист
+   - [ ] Код следует style guide
+   - [ ] Добавлена документация
+   - [ ] Протестировано локально
+   ```
+
+4. Дождись ревью
+
+### 4. Ревью процесс
+
+- Один из мейнтейнеров проверит твой код
+- Могут попросить внести изменения
+- После аппрува PR будет смержен
+
+## Что можно улучшать
+
+### 🔥 High Priority
+
+- [ ] Тесты (unit + integration)
+- [ ] Кастомизация питомцев
+- [ ] Мини-игры
+- [ ] Push-уведомления
+- [ ] Генерация story-картинок
+
+### 🌟 Nice to Have
+
+- [ ] Web-интерфейс (Telegram Mini Apps)
+- [ ] Больше языков
+- [ ] Анимации
+- [ ] Голосовые реакции
+- [ ] Marketplace
+
+### 🐛 Known Issues
+
+- [ ] FSM хранится в памяти (нужен Redis)
+- [ ] SQLite не масштабируется (нужна PostgreSQL)
+- [ ] Базовый анти-чит
+
+## Вопросы?
+
+- Создай [Issue](https://github.com/your-repo/issues)
+- Спроси в [Discussions](https://github.com/your-repo/discussions)
+- Напиши мейнтейнерам
 
 ---
 
-## 📂 Структура проекта
-
-```
-friendship-flames-bot/
-├── config.py              # Конфигурация
-├── main.py               # Точка входа
-├── tasks.py              # Фоновые задачи
-├── requirements.txt      # Зависимости
-├── .env.example         # Пример .env
-├── database/
-│   ├── init_db.py       # Инициализация БД
-│   └── crud.py          # CRUD операции
-├── handlers/            # Обработчики команд
-│   ├── start.py
-│   ├── profile.py
-│   ├── streaks.py
-│   ├── pets.py
-│   ├── shop.py
-│   ├── referrals.py
-│   ├── leaderboard.py
-│   ├── quests.py
-│   ├── gifts.py
-│   ├── games.py
-│   └── friends.py
-├── keyboards/           # Клавиатуры
-│   └── inline.py
-├── middlewares/         # Middleware
-│   ├── user_check.py
-│   └── throttling.py
-├── states/              # FSM состояния
-│   └── fsm.py
-└── utils/              # Утилиты
-    ├── text.py         # Тексты и локализация
-    └── time.py         # Работа со временем
-```
-
-### Где что добавлять
-
-- **Новый язык**: `utils/text.py` + `config.py`
-- **Новая команда**: создайте handler в `handlers/`
-- **Новая механика**: handler + CRUD в `database/crud.py`
-- **Новая валюта/ресурс**: `config.py` + миграция БД
-- **Фоновая задача**: `tasks.py`
-
----
-
-## 🗃️ База данных
-
-### Миграции
-
-При изменении структуры БД:
-
-1. **Создайте backup**:
-```bash
-cp friendship_flames.db friendship_flames.db.backup
-```
-
-2. **Напишите миграцию**:
-```python
-# migrations/001_add_achievements.py
-async def migrate():
-    db = await get_db()
-    
-    await db.execute("""
-        CREATE TABLE IF NOT EXISTS achievements (
-            achievement_id INTEGER PRIMARY KEY AUTOINCREMENT,
-            user_id INTEGER NOT NULL,
-            achievement_type TEXT NOT NULL,
-            unlocked_at INTEGER NOT NULL,
-            FOREIGN KEY (user_id) REFERENCES users(user_id)
-        )
-    """)
-    
-    await db.commit()
-    await db.close()
-```
-
-3. **Примените**:
-```python
-# В main.py
-from migrations import migrate_001
-await migrate_001.migrate()
-```
-
----
-
-## 🐛 Debugging
-
-### Логирование
-
-Добавляйте логи для отладки:
-
-```python
-import structlog
-
-logger = structlog.get_logger()
-
-async def complex_function():
-    logger.info("Starting complex operation", user_id=123)
-    
-    try:
-        # Ваш код
-        logger.debug("Intermediate step completed", data=some_data)
-    except Exception as e:
-        logger.error("Error occurred", error=str(e), user_id=123)
-        raise
-    
-    logger.info("Operation completed successfully")
-```
-
-### SQLite консоль
-
-Отладка БД:
-
-```bash
-sqlite3 friendship_flames.db
-
-# Просмотр структуры
-.schema users
-
-# Выборка данных
-SELECT * FROM users LIMIT 5;
-
-# Проверка активных серий
-SELECT s.streak_id, s.days, u1.nickname, u2.nickname 
-FROM streaks s
-JOIN users u1 ON s.user1_id = u1.user_id
-JOIN users u2 ON s.user2_id = u2.user_id
-WHERE s.status = 'active';
-```
-
----
-
-## 🌐 Локализация
-
-### Добавление нового языка
-
-1. **config.py**:
-```python
-LANGUAGES = {
-    # ...
-    'pt': '🇵🇹 Português',
-}
-```
-
-2. **utils/text.py**:
-```python
-TEXTS = {
-    # ...
-    'pt': {
-        'welcome_1': "✨ Bem-vindo...",
-        # ... все ключи из 'en'
-    }
-}
-```
-
-3. **Протестируйте**:
-```bash
-python main.py
-# Выберите новый язык при регистрации
-```
-
----
-
-## 📊 Performance
-
-### Оптимизация запросов
-
-❌ **Плохо** (N+1 запросов):
-```python
-for streak in streaks:
-    friend = await get_user(streak['friend_id'])
-    # ...
-```
-
-✅ **Хорошо** (1 запрос с JOIN):
-```python
-cursor = await db.execute("""
-    SELECT s.*, u.nickname, u.avatar
-    FROM streaks s
-    JOIN users u ON s.friend_id = u.user_id
-""")
-```
-
-### Индексация
-
-При большом количестве пользователей:
-
-```sql
-CREATE INDEX idx_users_referrer ON users(referrer_id);
-CREATE INDEX idx_streaks_expiry ON streaks(streak_expiry);
-CREATE INDEX idx_quests_user_status ON quests(user_id, status);
-```
-
----
-
-## 🚀 Деплой
-
-### Подготовка к production
-
-1. **Оптимизируйте БД**:
-```bash
-sqlite3 friendship_flames.db "VACUUM;"
-```
-
-2. **Включите логирование**:
-```python
-# В config.py
-DEBUG = False
-```
-
-3. **Настройте systemd** (см. README.md)
-
-4. **Мониторинг**:
-- Sentry для ошибок
-- Prometheus для метрик
-- Grafana для визуализации
-
----
-
-## ✅ Checklist перед PR
-
-- [ ] Код следует PEP 8
-- [ ] Добавлены type hints
-- [ ] Протестировано локально
-- [ ] Нет print() — только logger
-- [ ] Обновлена документация
-- [ ] Коммиты следуют Conventional Commits
-- [ ] Нет секретов в коде (токены, пароли)
-- [ ] Backward compatible (если возможно)
-
----
-
-## 📞 Контакты
-
-Вопросы по разработке:
-- Telegram: @your_username
-- Email: dev@yourproject.com
-
----
-
-Спасибо за вклад в проект! 🙏
+Спасибо за вклад! 🔥💫

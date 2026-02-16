@@ -1,0 +1,15 @@
+[Unit]
+Description=Friendship Flames Telegram Bot
+After=network.target
+
+[Service]
+Type=simple
+User=youruser
+WorkingDirectory=/home/youruser/friendship-flames-bot
+Environment="PATH=/home/youruser/friendship-flames-bot/venv/bin"
+ExecStart=/home/youruser/friendship-flames-bot/venv/bin/python main.py
+Restart=always
+RestartSec=10
+
+[Install]
+WantedBy=multi-user.target

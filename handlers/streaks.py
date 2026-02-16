@@ -1,334 +1,350 @@
-import asyncio
 from aiogram import Router, F
-from aiogram.types import CallbackQuery, Message
+from aiogram.filters import Command
+from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
-from states.fsm import FlameStates
+from database import Database
+from states import StreakStates
 from keyboards.inline import (
-    get_streaks_keyboard, get_streak_actions_keyboard, 
-    get_flame_request_keyboard, get_back_to_menu_keyboard,
-    get_revive_keyboard
+    get_streaks_keyboard,
+    get_streak_actions_keyboard,
+    get_streak_request_keyboard,
+    get_back_keyboard
 )
-from database.crud import (
-    get_user_streaks, extend_streak, get_user_by_username,
-    create_flame_request, get_pending_request, accept_flame_request,
-    update_user_sparks, get_streak_by_users, kill_streak,
-    revive_streak, create_pet, get_user
-)
-from utils.text import get_text, get_streak_color, format_time_left, escape_markdown
-from utils.time import get_current_timestamp, get_time_until_expiry, can_extend_streak, get_revival_cost
-from config import STREAK_MILESTONES
-import random
+from locales import get_text
+from utils.time_utils import format_time_left
+from config.constants import STREAK_COLORS, EXTEND_SPARK_REWARD, STREAK_MILESTONES
+from datetime import datetime, timedelta
+import structlog
 
+logger = structlog.get_logger()
 router = Router()
+db = Database()
+
+
+def get_streak_color(days: int) -> str:
+    for threshold in sorted(STREAK_COLORS.keys(), reverse=True):
+        if days >= threshold:
+            return STREAK_COLORS[threshold]
+    return "🔴"
 
 
 @router.callback_query(F.data == "menu_streaks")
-async def show_streaks(callback: CallbackQuery, user_data: dict):
-    lang = user_data['language']
-    user_id = user_data['user_id']
+@router.message(Command("streaks"))
+async def show_streaks(event, state: FSMContext = None):
+    if isinstance(event, CallbackQuery):
+        user_id = event.from_user.id
+        message = event.message
+        is_callback = True
+    else:
+        user_id = event.from_user.id
+        message = event
+        is_callback = False
     
-    streaks = await get_user_streaks(user_id)
+    streaks = await db.get_user_streaks(user_id)
     
     if not streaks:
-        await callback.message.edit_text(
-            get_text(lang, 'no_streaks'),
-            reply_markup=get_streaks_keyboard(lang),
-            parse_mode='MarkdownV2'
-        )
-        await callback.answer()
-        return
-    
-    streaks_text = ""
-    for streak in streaks:
-        days = streak['days']
-        color_emoji, color_name = get_streak_color(days)
-        time_left = get_time_until_expiry(streak['streak_expiry'])
+        text = get_text("no_streaks", user_id)
+        keyboard = get_streaks_keyboard(has_streaks=False)
+    else:
+        streaks_text = ""
+        for streak in streaks:
+            friend_id = streak['user2_id'] if streak['user1_id'] == user_id else streak['user1_id']
+            friend_name = streak['user2_name'] if streak['user1_id'] == user_id else streak['user1_name']
+            
+            color = get_streak_color(streak['days'])
+            expiry = datetime.fromisoformat(streak['expiry'])
+            time_left = format_time_left(expiry)
+            
+            streaks_text += get_text(
+                "streak_item",
+                user_id,
+                color=color,
+                friend_name=friend_name,
+                days=streak['days'],
+                time_left=time_left
+            )
         
-        streaks_text += get_text(
-            lang,
-            'streak_item',
-            color=color_emoji,
-            days=days,
-            avatar=streak['friend_avatar'],
-            nickname=escape_markdown(streak['friend_nickname']),
-            time_left=format_time_left(time_left, lang)
-        )
+        text = get_text("streaks_list", user_id, count=len(streaks), streaks_text=streaks_text)
+        keyboard = get_streaks_keyboard(has_streaks=True)
     
-    full_text = get_text(lang, 'streaks_list', streaks=streaks_text)
+    if is_callback:
+        await message.edit_text(text, reply_markup=keyboard, parse_mode="MarkdownV2")
+        await event.answer()
+    else:
+        await message.answer(text, reply_markup=keyboard, parse_mode="MarkdownV2")
     
-    await callback.message.edit_text(
-        full_text,
-        reply_markup=get_streaks_keyboard(lang),
-        parse_mode='MarkdownV2'
-    )
-    
-    await callback.answer()
+    if state:
+        await state.clear()
 
 
 @router.callback_query(F.data == "streak_new")
-async def new_streak(callback: CallbackQuery, state: FSMContext, user_data: dict):
-    lang = user_data['language']
-    
-    await callback.message.edit_text(
-        get_text(lang, 'light_flame'),
-        reply_markup=get_back_to_menu_keyboard(lang),
-        parse_mode='MarkdownV2'
-    )
+async def start_new_streak(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
     
     await callback.message.answer(
-        get_text(lang, 'search_friend'),
-        parse_mode='MarkdownV2'
+        get_text("search_friend", user_id),
+        reply_markup=get_back_keyboard("menu_streaks")
     )
-    
-    await state.set_state(FlameStates.searching_friend)
+    await state.set_state(StreakStates.searching_friend)
     await callback.answer()
 
 
-@router.message(FlameStates.searching_friend)
-async def process_friend_search(message: Message, state: FSMContext, user_data: dict):
-    lang = user_data['language']
-    username = message.text.strip().replace('@', '')
+@router.message(StreakStates.searching_friend)
+async def process_friend_search(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    username = message.text.strip().lstrip("@")
     
-    friend = await get_user_by_username(username)
-    
-    if not friend or friend['user_id'] == user_data['user_id']:
-        await message.answer(
-            get_text(lang, 'friend_not_found'),
-            parse_mode='MarkdownV2'
-        )
+    if not username:
+        await message.answer("❌ Неверный формат. Введи @username:")
         return
     
-    existing_streak = await get_streak_by_users(user_data['user_id'], friend['user_id'])
+    friend = await db.get_user_by_username(username)
+    
+    if not friend:
+        await message.answer(get_text("user_not_found", user_id))
+        return
+    
+    if friend['user_id'] == user_id:
+        await message.answer(get_text("cant_streak_yourself", user_id))
+        return
+    
+    existing_streak = await db.get_streak(user_id, friend['user_id'])
     if existing_streak:
+        await message.answer(get_text("streak_already_exists", user_id))
+        return
+    
+    existing_request = await db.get_pending_request(user_id, friend['user_id'])
+    if existing_request:
+        await message.answer("⏳ Запрос уже отправлен. Жди ответа!")
+        return
+    
+    reverse_request = await db.get_pending_request(friend['user_id'], user_id)
+    if reverse_request:
+        await db.update_request_status(reverse_request['id'], 'accepted')
+        streak_id = await db.create_streak(user_id, friend['user_id'])
+        
         await message.answer(
-            "You already have a flame with this user!" if lang == 'en' else "У вас уже есть огонёк с этим пользователем!",
-            parse_mode='MarkdownV2'
+            get_text("streak_accepted", user_id, name=friend['username']),
+            parse_mode="MarkdownV2"
         )
+        
+        try:
+            from main import bot
+            await bot.send_message(
+                friend['user_id'],
+                get_text("streak_accepted", friend['user_id'], name=message.from_user.username or "друг"),
+                parse_mode="MarkdownV2"
+            )
+        except Exception as e:
+            logger.error("failed_to_notify_friend", error=str(e))
+        
         await state.clear()
         return
     
-    await create_flame_request(user_data['user_id'], friend['user_id'])
+    request_id = await db.create_streak_request(user_id, friend['user_id'])
     
     await message.answer(
-        get_text(
-            lang,
-            'flame_request_sent',
-            avatar=friend['avatar'],
-            nickname=escape_markdown(friend['nickname'])
-        ),
-        parse_mode='MarkdownV2'
+        get_text("streak_request_sent", user_id, name=friend['username']),
+        parse_mode="MarkdownV2"
     )
     
+    user = await db.get_user(user_id)
     try:
-        friend_lang = friend['language']
-        await message.bot.send_message(
+        from main import bot
+        await bot.send_message(
             friend['user_id'],
-            get_text(
-                friend_lang,
-                'flame_request_received',
-                avatar=user_data['avatar'],
-                nickname=escape_markdown(user_data['nickname'])
-            ),
-            reply_markup=get_flame_request_keyboard(user_data['user_id'], friend_lang),
-            parse_mode='MarkdownV2'
+            get_text("streak_request", friend['user_id'], from_name=user['username']),
+            reply_markup=get_streak_request_keyboard(request_id),
+            parse_mode="MarkdownV2"
         )
-    except:
-        pass
+    except Exception as e:
+        logger.error("failed_to_send_request", error=str(e))
     
     await state.clear()
 
 
-@router.callback_query(F.data.startswith("flame_accept_"))
-async def accept_flame(callback: CallbackQuery, user_data: dict):
-    from_user_id = int(callback.data.split("_")[2])
-    lang = user_data['language']
+@router.callback_query(F.data.startswith("streak_accept_"))
+async def accept_streak_request(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    request_id = int(callback.data.split("_")[2])
     
-    request = await get_pending_request(from_user_id, user_data['user_id'])
+    async with await db.get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM streak_requests WHERE id = ? AND status = 'pending'",
+            (request_id,)
+        )
+        request = await cursor.fetchone()
     
     if not request:
-        await callback.answer("Request no longer valid" if lang == 'en' else "Запрос больше недействителен", show_alert=True)
+        await callback.answer("❌ Запрос не найден", show_alert=True)
         return
     
-    await accept_flame_request(from_user_id, user_data['user_id'])
+    if request['to_user_id'] != user_id:
+        await callback.answer("❌ Это не твой запрос", show_alert=True)
+        return
     
-    from_user = await get_user(from_user_id)
+    from_user = await db.get_user(request['from_user_id'])
+    
+    await db.update_request_status(request_id, 'accepted')
+    streak_id = await db.create_streak(request['from_user_id'], user_id)
     
     await callback.message.edit_text(
-        get_text(
-            lang,
-            'flame_started',
-            avatar=from_user['avatar'],
-            nickname=escape_markdown(from_user['nickname'])
-        ),
-        parse_mode='MarkdownV2'
+        get_text("streak_accepted", user_id, name=from_user['username']),
+        parse_mode="MarkdownV2"
     )
     
     try:
-        from_lang = from_user['language']
-        await callback.bot.send_message(
-            from_user_id,
-            get_text(
-                from_lang,
-                'flame_started',
-                avatar=user_data['avatar'],
-                nickname=escape_markdown(user_data['nickname'])
-            ),
-            parse_mode='MarkdownV2'
+        from main import bot
+        await bot.send_message(
+            request['from_user_id'],
+            get_text("streak_accepted", request['from_user_id'], name=callback.from_user.username or "друг"),
+            parse_mode="MarkdownV2"
         )
-    except:
-        pass
+    except Exception as e:
+        logger.error("failed_to_notify_requester", error=str(e))
     
-    await callback.answer()
+    await callback.answer("✅ Огонёк зажжён!")
 
 
-@router.callback_query(F.data.startswith("flame_reject_"))
-async def reject_flame(callback: CallbackQuery, user_data: dict):
-    lang = user_data['language']
+@router.callback_query(F.data.startswith("streak_reject_"))
+async def reject_streak_request(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    request_id = int(callback.data.split("_")[2])
+    
+    async with await db.get_connection() as conn:
+        cursor = await conn.execute(
+            "SELECT * FROM streak_requests WHERE id = ? AND status = 'pending'",
+            (request_id,)
+        )
+        request = await cursor.fetchone()
+    
+    if not request:
+        await callback.answer("❌ Запрос не найден", show_alert=True)
+        return
+    
+    if request['to_user_id'] != user_id:
+        await callback.answer("❌ Это не твой запрос", show_alert=True)
+        return
+    
+    from_user = await db.get_user(request['from_user_id'])
+    
+    await db.update_request_status(request_id, 'rejected')
     
     await callback.message.edit_text(
-        "Request declined" if lang == 'en' else "Запрос отклонён",
-        parse_mode=None
+        get_text("streak_rejected", user_id, name=from_user['username']),
+        parse_mode="MarkdownV2"
     )
     
-    await callback.answer()
+    try:
+        from main import bot
+        await bot.send_message(
+            request['from_user_id'],
+            get_text("streak_rejected", request['from_user_id'], name=callback.from_user.username or "друг"),
+            parse_mode="MarkdownV2"
+        )
+    except Exception as e:
+        logger.error("failed_to_notify_requester", error=str(e))
+    
+    await callback.answer("❌ Отклонено")
 
 
 @router.callback_query(F.data.startswith("streak_extend_"))
-async def extend_streak_action(callback: CallbackQuery, user_data: dict):
+async def extend_streak(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    if callback.data == "streak_extend_all":
+        await extend_all_streaks(callback)
+        return
+    
     streak_id = int(callback.data.split("_")[2])
-    lang = user_data['language']
     
-    streaks = await get_user_streaks(user_data['user_id'])
-    streak = next((s for s in streaks if s['streak_id'] == streak_id), None)
-    
-    if not streak:
-        await callback.answer("Streak not found" if lang == 'en' else "Огонёк не найден", show_alert=True)
-        return
-    
-    if not can_extend_streak(streak['last_update'], cooldown_hours=8):
-        await callback.answer(
-            "Too soon! Wait 8 hours between extensions" if lang == 'en' else "Слишком рано! Подожди 8 часов между продлениями",
-            show_alert=True
-        )
-        return
-    
-    result = await extend_streak(streak_id)
-    new_days = result['new_days']
-    
-    base_sparks = 20 + (new_days // 10) * 5
-    sparks_reward = random.randint(base_sparks, base_sparks + 20)
-    
-    await update_user_sparks(user_data['user_id'], sparks_reward)
-    
-    color_emoji, color_name = get_streak_color(new_days)
-    
-    milestone_text = ""
-    if new_days in STREAK_MILESTONES:
-        milestone_text = f"🎉 *MILESTONE\\!* {new_days} days\\! \\+{sparks_reward * 2} bonus 🔥"
-        await update_user_sparks(user_data['user_id'], sparks_reward * 2)
-        
-        if new_days == 3 and not streak.get('pet_id'):
-            pet_data = await create_pet(streak_id, user_data['user_id'])
-            
-            await callback.message.answer(
-                get_text(
-                    lang,
-                    'pet_hatched',
-                    pet=pet_data['pet_emoji'],
-                    pet_name=escape_markdown(pet_data['pet_name'])
-                ),
-                parse_mode='MarkdownV2'
-            )
-    
-    await callback.message.edit_text(
-        get_text(
-            lang,
-            'flame_extended',
-            color=color_emoji,
-            days=new_days,
-            avatar=streak['friend_avatar'],
-            nickname=escape_markdown(streak['friend_nickname']),
-            sparks=sparks_reward,
-            milestone=milestone_text
-        ),
-        parse_mode='MarkdownV2'
-    )
-    
-    friend_data = await get_user(streak['friend_id'])
-    if friend_data:
-        try:
-            friend_lang = friend_data['language']
-            await callback.bot.send_message(
-                streak['friend_id'],
-                get_text(
-                    friend_lang,
-                    'flame_extended',
-                    color=color_emoji,
-                    days=new_days,
-                    avatar=user_data['avatar'],
-                    nickname=escape_markdown(user_data['nickname']),
-                    sparks=sparks_reward,
-                    milestone=milestone_text
-                ),
-                parse_mode='MarkdownV2'
-            )
-        except:
-            pass
-    
-    await callback.answer()
-
-
-@router.callback_query(F.data.startswith("revive_confirm_"))
-async def revive_streak_action(callback: CallbackQuery, user_data: dict):
-    streak_id = int(callback.data.split("_")[2])
-    lang = user_data['language']
-    
-    streaks = await get_user_streaks(user_data['user_id'], status='dead')
-    streak = next((s for s in streaks if s['streak_id'] == streak_id), None)
-    
-    if not streak:
-        await callback.answer("Streak not found" if lang == 'en' else "Огонёк не найден", show_alert=True)
-        return
-    
-    now = get_current_timestamp()
-    hours_passed = (now - streak['died_at']) / 3600
-    
-    if hours_passed > 168:
-        await callback.answer(
-            "Too late to revive!" if lang == 'en' else "Слишком поздно для воскрешения!",
-            show_alert=True
-        )
-        return
-    
-    cost = get_revival_cost(int(hours_passed))
-    
-    if user_data['stars'] < cost:
-        await callback.answer(
-            f"Need {cost} ⭐ stars!" if lang == 'en' else f"Нужно {cost} ⭐ звёзд!",
-            show_alert=True
-        )
-        return
-    
-    success = await revive_streak(streak_id)
+    success, new_days = await db.extend_streak(streak_id, user_id)
     
     if not success:
+        cooldown_time = "8 часов"
         await callback.answer(
-            get_text(lang, 'revive_no_lives'),
+            get_text("extend_cooldown", user_id, time=cooldown_time),
             show_alert=True
         )
         return
     
-    await update_user_sparks(user_data['user_id'], -cost)
+    reward = EXTEND_SPARK_REWARD + (new_days // 10) * 5
+    await db.add_sparks(user_id, reward)
     
-    await callback.message.edit_text(
-        get_text(
-            lang,
-            'revive_success',
-            avatar=streak['friend_avatar'],
-            nickname=escape_markdown(streak['friend_nickname']),
-            lives=streak['lives_left'] - 1
-        ),
-        parse_mode='MarkdownV2'
+    if new_days in STREAK_MILESTONES:
+        streak = await db.get_connection()
+        async with streak as conn:
+            cursor = await conn.execute("SELECT * FROM streaks WHERE id = ?", (streak_id,))
+            streak_data = await cursor.fetchone()
+        
+        friend_id = streak_data['user2_id'] if streak_data['user1_id'] == user_id else streak_data['user1_id']
+        friend = await db.get_user(friend_id)
+        
+        milestone_rewards = f"• {reward * 2} искр 🔥\n• Достижение 🏆"
+        
+        await callback.message.answer(
+            get_text(
+                "streak_milestone",
+                user_id,
+                friend_name=friend['username'],
+                days=new_days,
+                rewards=milestone_rewards
+            ),
+            parse_mode="MarkdownV2"
+        )
+        
+        await db.add_sparks(user_id, reward)
+        await db.add_achievement(
+            user_id,
+            type_="streak",
+            name=f"Серия {new_days} дней",
+            description=f"Поддержал огонёк {new_days} дней!",
+            emoji=get_streak_color(new_days)
+        )
+    
+    user = await db.get_user(user_id)
+    if new_days > user['best_streak']:
+        await db.update_user(user_id, best_streak=new_days)
+    
+    await callback.answer(
+        get_text("extend_success", user_id, sparks=reward),
+        show_alert=True
     )
     
-    await callback.answer()
+    await show_streaks(callback)
+
+
+@router.callback_query(F.data == "streak_extend_all")
+async def extend_all_streaks(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    streaks = await db.get_user_streaks(user_id)
+    
+    extended_count = 0
+    total_reward = 0
+    
+    for streak in streaks:
+        success, new_days = await db.extend_streak(streak['id'], user_id)
+        if success:
+            extended_count += 1
+            reward = EXTEND_SPARK_REWARD + (new_days // 10) * 5
+            total_reward += reward
+    
+    if extended_count == 0:
+        await callback.answer("⏳ Все огоньки уже продлены недавно", show_alert=True)
+        return
+    
+    await db.add_sparks(user_id, total_reward)
+    
+    await callback.answer(
+        get_text("extend_all_success", user_id, sparks=total_reward, count=extended_count),
+        show_alert=True
+    )
+    
+    await show_streaks(callback)
+
+
+@router.callback_query(F.data == "streak_suggest")
+async def suggest_friends(callback: CallbackQuery):
+    user_id = callback.from_user.id
+    
+    await callback.answer("💡 Функция в разработке!", show_alert=True)

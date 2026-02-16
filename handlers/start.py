@@ -1,266 +1,227 @@
-import asyncio
 from aiogram import Router, F
-from aiogram.filters import CommandStart, Command
+from aiogram.filters import Command, CommandStart
 from aiogram.types import Message, CallbackQuery
 from aiogram.fsm.context import FSMContext
-from states.fsm import OnboardingStates
-from keyboards.inline import (
-    get_language_keyboard, get_avatar_keyboard, 
-    get_tutorial_keyboard, get_main_menu_keyboard
-)
-from database.crud import create_user, get_user_by_nickname, update_user, process_referral
-from utils.text import get_text, escape_markdown
-from utils.time import get_current_timestamp
-import re
+from database import Database
+from states import OnboardingStates
+from keyboards.inline import get_language_keyboard, get_avatar_keyboard, get_menu_keyboard
+from locales import get_text, set_user_language
+from config.constants import Language, STARTER_AVATARS, ONBOARDING_SPARKS, ONBOARDING_SHIELDS
+import asyncio
+import structlog
+import random
 
+logger = structlog.get_logger()
 router = Router()
+db = Database()
 
 
 @router.message(CommandStart())
-async def cmd_start(message: Message, state: FSMContext, user_data: dict, is_registered: bool):
+async def cmd_start(message: Message, state: FSMContext):
     user_id = message.from_user.id
+    user = await db.get_user(user_id)
     
-    if is_registered:
-        lang = user_data['language']
-        await message.answer(
-            get_text(lang, 'main_menu'),
-            reply_markup=get_main_menu_keyboard(lang),
-            parse_mode='MarkdownV2'
-        )
-        return
-    
-    args = message.text.split()
+    args = message.text.split()[1] if len(message.text.split()) > 1 else None
     referrer_id = None
-    if len(args) > 1:
+    
+    if args and args.startswith("ref_"):
         try:
-            referrer_id = int(args[1].replace('ref', ''))
-        except:
+            referrer_id = int(args.split("_")[1])
+        except (ValueError, IndexError):
             pass
+    
+    if user:
+        await message.answer(
+            get_text("menu", user_id),
+            reply_markup=get_menu_keyboard(user_id),
+            parse_mode="MarkdownV2"
+        )
+        await state.clear()
+        return
     
     await state.update_data(referrer_id=referrer_id)
     
-    await message.answer("✨", parse_mode=None)
-    await asyncio.sleep(1)
-    
-    await message.answer(
-        get_text('en', 'welcome_1'),
-        parse_mode='MarkdownV2'
-    )
-    
+    msg1 = await message.answer(get_text("welcome_1", user_id), parse_mode="MarkdownV2")
     await asyncio.sleep(1.5)
     
-    await message.answer(
-        get_text('en', 'welcome_2'),
-        parse_mode='MarkdownV2'
-    )
-    
+    msg2 = await message.answer(get_text("welcome_2", user_id), parse_mode="MarkdownV2")
     await asyncio.sleep(1.5)
     
-    await message.answer(
-        get_text('en', 'welcome_3'),
-        parse_mode='MarkdownV2'
-    )
-    
+    await message.answer(get_text("welcome_3", user_id), parse_mode="MarkdownV2")
     await asyncio.sleep(2)
     
     await message.answer(
-        get_text('en', 'choose_language'),
-        reply_markup=get_language_keyboard(),
-        parse_mode='MarkdownV2'
+        get_text("choose_language", user_id),
+        reply_markup=get_language_keyboard()
     )
-    
     await state.set_state(OnboardingStates.choosing_language)
 
 
-@router.callback_query(F.data.startswith("lang_"), OnboardingStates.choosing_language)
+@router.callback_query(OnboardingStates.choosing_language, F.data.startswith("lang_"))
 async def process_language(callback: CallbackQuery, state: FSMContext):
-    language = callback.data.split("_")[1]
+    user_id = callback.from_user.id
+    lang_code = callback.data.split("_")[1]
     
+    try:
+        language = Language(lang_code)
+    except ValueError:
+        language = Language.RU
+    
+    set_user_language(user_id, language)
     await state.update_data(language=language)
     
-    await callback.message.edit_text(
-        get_text(language, 'enter_nickname'),
-        parse_mode='MarkdownV2'
-    )
+    await callback.message.edit_text(get_text("language_set", user_id))
+    await asyncio.sleep(1)
     
-    await state.set_state(OnboardingStates.entering_nickname)
+    await callback.message.answer(get_text("ask_username", user_id))
+    await state.set_state(OnboardingStates.entering_username)
     await callback.answer()
 
 
-@router.message(OnboardingStates.entering_nickname)
-async def process_nickname(message: Message, state: FSMContext):
-    nickname = message.text.strip()
+@router.message(OnboardingStates.entering_username)
+async def process_username(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    username = message.text.strip()
     
-    data = await state.get_data()
-    language = data.get('language', 'en')
-    
-    if not re.match(r'^[a-zA-Z0-9_]{3,20}$', nickname):
-        await message.answer(
-            get_text(language, 'nickname_invalid'),
-            parse_mode='MarkdownV2'
-        )
+    if len(username) < 2 or len(username) > 30:
+        await message.answer("❌ Ник должен быть от 2 до 30 символов. Попробуй ещё раз:")
         return
     
-    existing = await get_user_by_nickname(nickname)
+    existing = await db.get_user_by_username(username)
     if existing:
-        await message.answer(
-            get_text(language, 'nickname_taken'),
-            parse_mode='MarkdownV2'
-        )
+        await message.answer(get_text("username_taken", user_id))
         return
     
-    await state.update_data(nickname=nickname)
+    await state.update_data(username=username)
     
     await message.answer(
-        get_text(language, 'choose_avatar'),
+        get_text("username_set", user_id, username),
         reply_markup=get_avatar_keyboard(),
-        parse_mode='MarkdownV2'
+        parse_mode="MarkdownV2"
     )
-    
     await state.set_state(OnboardingStates.choosing_avatar)
 
 
-@router.callback_query(F.data.startswith("avatar_"), OnboardingStates.choosing_avatar)
+@router.callback_query(OnboardingStates.choosing_avatar, F.data.startswith("avatar_"))
 async def process_avatar(callback: CallbackQuery, state: FSMContext):
-    avatar = callback.data.split("_")[1]
+    user_id = callback.from_user.id
+    avatar_idx = int(callback.data.split("_")[1])
+    avatar = STARTER_AVATARS[avatar_idx]
     
     data = await state.get_data()
-    language = data.get('language', 'en')
-    nickname = data['nickname']
-    referrer_id = data.get('referrer_id')
+    username = data.get("username")
+    language = data.get("language", Language.RU)
+    referrer_id = data.get("referrer_id")
     
-    user_id = callback.from_user.id
-    username = callback.from_user.username
-    
-    success = await create_user(
-        user_id=user_id,
-        username=username,
-        nickname=nickname,
-        avatar=avatar,
-        language=language,
-        referrer_id=referrer_id
-    )
+    success = await db.create_user(user_id, username, avatar, language, referrer_id)
     
     if not success:
-        await callback.answer("Error creating user. Please try again.", show_alert=True)
+        await callback.answer("❌ Ошибка создания пользователя", show_alert=True)
         return
     
+    await db.add_sparks(user_id, ONBOARDING_SPARKS)
+    await db.add_inventory_item(user_id, "shield", "basic", ONBOARDING_SHIELDS)
+    
+    base_pet_emoji = random.choice(["🥚"])
+    await db.create_pet(user_id, "Серийчик", base_pet_emoji, "common")
+    
     if referrer_id:
-        reward = await process_referral(referrer_id, user_id)
-        from database.crud import get_user
-        referrer = await get_user(referrer_id)
-        if referrer:
-            try:
-                from aiogram import Bot
-                bot: Bot = callback.bot
-                ref_lang = referrer['language']
-                milestone = ""
-                
-                if referrer['total_referrals'] in [5, 10, 25, 50]:
-                    milestone = f"🎉 Milestone: {referrer['total_referrals']} referrals!"
-                
-                await bot.send_message(
-                    referrer_id,
-                    get_text(
-                        ref_lang, 
-                        'new_referral',
-                        avatar=avatar,
-                        nickname=escape_markdown(nickname),
-                        reward=reward,
-                        milestone=milestone
-                    ),
-                    parse_mode='MarkdownV2'
-                )
-            except:
-                pass
+        await process_referral_reward(referrer_id, user_id)
     
-    await callback.message.edit_text(
-        get_text(language, 'tutorial_1'),
-        reply_markup=get_tutorial_keyboard(1, language),
-        parse_mode='MarkdownV2'
-    )
+    await callback.message.edit_text(get_text("avatar_chosen", user_id, avatar=avatar))
+    await asyncio.sleep(1)
     
-    await state.set_state(OnboardingStates.tutorial_step_1)
+    await show_tutorial(callback.message, user_id, state)
     await callback.answer()
 
 
-@router.callback_query(F.data == "tutorial_2", OnboardingStates.tutorial_step_1)
-async def tutorial_step_2(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    language = data.get('language', 'en')
+async def show_tutorial(message: Message, user_id: int, state: FSMContext):
+    await message.answer(get_text("tutorial_1", user_id), parse_mode="MarkdownV2")
+    await asyncio.sleep(3)
     
-    await callback.message.edit_text(
-        get_text(language, 'tutorial_2'),
-        reply_markup=get_tutorial_keyboard(2, language),
-        parse_mode='MarkdownV2'
-    )
+    await message.answer(get_text("tutorial_2", user_id), parse_mode="MarkdownV2")
+    await asyncio.sleep(3)
     
-    await state.set_state(OnboardingStates.tutorial_step_2)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "tutorial_3", OnboardingStates.tutorial_step_2)
-async def tutorial_step_3(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    language = data.get('language', 'en')
-    
-    await callback.message.edit_text(
-        get_text(language, 'tutorial_3'),
-        reply_markup=get_tutorial_keyboard(3, language),
-        parse_mode='MarkdownV2'
-    )
-    
-    await state.set_state(OnboardingStates.tutorial_step_3)
-    await callback.answer()
-
-
-@router.callback_query(F.data == "tutorial_complete")
-async def tutorial_complete(callback: CallbackQuery, state: FSMContext):
-    data = await state.get_data()
-    language = data.get('language', 'en')
-    user_id = callback.from_user.id
-    
-    await update_user(user_id, tutorial_completed=True)
-    
-    await callback.message.edit_text(
-        get_text(language, 'bonus_received'),
-        parse_mode='MarkdownV2'
-    )
-    
+    await message.answer(get_text("tutorial_3", user_id), parse_mode="MarkdownV2")
     await asyncio.sleep(2)
     
-    await callback.message.answer(
-        get_text(language, 'main_menu'),
-        reply_markup=get_main_menu_keyboard(language),
-        parse_mode='MarkdownV2'
+    await message.answer(
+        get_text("onboarding_complete", user_id),
+        reply_markup=get_menu_keyboard(user_id),
+        parse_mode="MarkdownV2"
+    )
+    await state.clear()
+
+
+async def process_referral_reward(referrer_id: int, new_user_id: int):
+    referrer = await db.get_user(referrer_id)
+    if not referrer:
+        return
+    
+    referral_count = await db.get_referral_count(referrer_id)
+    
+    base_reward = 50
+    if referral_count <= 5:
+        rewards_map = {1: 50, 2: 80, 3: 120, 4: 200, 5: 350}
+        base_reward = rewards_map.get(referral_count, 600)
+    elif referral_count <= 10:
+        base_reward = 600
+    elif referral_count <= 25:
+        base_reward = 800
+    elif referral_count <= 50:
+        base_reward = 1200
+    else:
+        base_reward = 1500
+    
+    new_user = await db.get_user(new_user_id)
+    if new_user and new_user.get('is_premium'):
+        base_reward *= 2
+    
+    await db.add_sparks(referrer_id, base_reward)
+    await db.update_user(referrer_id, total_referrals=referral_count)
+    
+    await db.add_referral_reward(
+        referrer_id,
+        level=1,
+        referral_count=referral_count,
+        reward_type="sparks",
+        reward_value=base_reward
     )
     
-    await state.clear()
-    await callback.answer()
+    logger.info(
+        "referral_reward_given",
+        referrer_id=referrer_id,
+        new_user_id=new_user_id,
+        reward=base_reward,
+        count=referral_count
+    )
 
 
 @router.message(Command("menu"))
-async def cmd_menu(message: Message, user_data: dict, is_registered: bool):
-    if not is_registered:
-        await message.answer("Please start the bot first with /start")
+async def cmd_menu(message: Message, state: FSMContext):
+    user_id = message.from_user.id
+    user = await db.get_user(user_id)
+    
+    if not user:
+        await cmd_start(message, state)
         return
     
-    lang = user_data['language']
     await message.answer(
-        get_text(lang, 'main_menu'),
-        reply_markup=get_main_menu_keyboard(lang),
-        parse_mode='MarkdownV2'
+        get_text("menu", user_id),
+        reply_markup=get_menu_keyboard(user_id),
+        parse_mode="MarkdownV2"
     )
+    await state.clear()
 
 
 @router.callback_query(F.data == "menu_main")
-async def menu_main(callback: CallbackQuery, user_data: dict):
-    lang = user_data['language']
+async def show_menu(callback: CallbackQuery, state: FSMContext):
+    user_id = callback.from_user.id
     
     await callback.message.edit_text(
-        get_text(lang, 'main_menu'),
-        reply_markup=get_main_menu_keyboard(lang),
-        parse_mode='MarkdownV2'
+        get_text("menu", user_id),
+        reply_markup=get_menu_keyboard(user_id),
+        parse_mode="MarkdownV2"
     )
-    
+    await state.clear()
     await callback.answer()
