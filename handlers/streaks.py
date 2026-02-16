@@ -168,7 +168,7 @@ async def accept_streak_request(callback: CallbackQuery):
     user_id = callback.from_user.id
     request_id = int(callback.data.split("_")[2])
     
-    async with db.get_connection() as conn:
+    async with await db.get_connection() as conn:
         cursor = await conn.execute(
             "SELECT * FROM streak_requests WHERE id = ? AND status = 'pending'",
             (request_id,)
